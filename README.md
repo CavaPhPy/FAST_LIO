@@ -1,3 +1,32 @@
+## 适配 [livox_ros_driver2](https://github.com/Livox-SDK/livox_ros_driver2)（MID-360需要）
+
+### Build from source
+
+Clone the repository and catkin_make:
+
+```bash
+cd ~/$A_ROS_DIR$/src
+git clone https://github.com/CavaPhPy/FAST_LIO.git
+cd FAST_LIO
+git submodule update --init
+cd ../..
+catkin_make
+source devel/setup.bash
+```
+
+### Directly run
+
+```bash
+cd ~/$FAST_LIO_ROS_DIR$
+source devel/setup.bash
+roslaunch fast_lio mapping_mid360.launch
+roslaunch livox_ros_driver2 msg_MID360.launch
+```
+
+---
+---
+---
+
 ## Related Works and Extended Application
 
 **SLAM:**
