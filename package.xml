@@ -27,6 +27,10 @@
   <build_depend>pcl_ros</build_depend>
   <build_depend>livox_ros_driver2</build_depend>
   <build_depend>message_generation</build_depend>
+  <!-- 添加rtk支持-开始 -->
+  <build_depend>yaml-cpp</build_depend>
+  <build_depend>roslib</build_depend>
+  <!-- 添加rtk支持-结束 -->
 
   <run_depend>geometry_msgs</run_depend>
   <run_depend>nav_msgs</run_depend>
@@ -38,6 +42,10 @@
   <run_depend>pcl_ros</run_depend>
   <run_depend>livox_ros_driver2</run_depend>
   <run_depend>message_runtime</run_depend>
+  <!-- 添加rtk支持-开始 -->
+  <run_depend>myaml-cpp</run_depend>
+  <run_depend>roslib</run_depend>
+  <!-- 添加rtk支持-结束 -->
 
   <test_depend>rostest</test_depend>
   <test_depend>rosbag</test_depend>

@@ -59,6 +59,12 @@
 #include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
+// 添加rtk支持-开始
+#include <sensor_msgs/NavSatFix.h>
+#include <yaml-cpp/yaml.h>
+#include <fstream>
+#include <ros/package.h>
+// 添加rtk支持-结束
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -139,6 +145,21 @@ geometry_msgs::PoseStamped msg_body_pose;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+
+// 添加rtk支持-开始
+// 是否融合rtk数据
+bool is_fuse_rtk = false;
+// rtk可信度阈值
+double rtk_dop_threshold = 5.0;
+// 是否已经绑定了地图原点
+bool rtk_origin_set = false;
+// rtk订阅者
+ros::Subscriber rtk_subscriber;
+// 最新的rtk数据
+sensor_msgs::NavSatFix latest_rtk_data;
+// 地图原点文件路径
+std::string map_origin_rtk_file_path;
+// 添加rtk支持-结束
 
 void SigHandle(int sig)
 {
@@ -753,6 +774,118 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     solve_time += omp_get_wtime() - solve_start_;
 }
 
+// 添加rtk支持-开始
+
+// 添加RTK回调函数
+void rtkCallback(const sensor_msgs::NavSatFix::ConstPtr &msg)
+{
+    latest_rtk_data = *msg;
+}
+
+// 添加检查RTK精度的函数
+bool isRTKPrecisionGood()
+{
+    // 检查是否有有效的RTK数据
+    if (!latest_rtk_data.header.stamp.isValid())
+    {
+        return false;
+    }
+
+    // 检查RTK状态是否为FIX状态
+    if (latest_rtk_data.status.status != sensor_msgs::NavSatStatus::STATUS_FIX)
+    {
+        return false;
+    }
+
+    // 检查DOP值（使用position_covariance[0]作为示例）
+    // 如果position_covariance_type为COVARIANCE_TYPE_UNKNOWN，则假设精度良好
+    if (latest_rtk_data.position_covariance_type == sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN)
+    {
+        return true;
+    }
+
+    // 检查position_covariance[0]是否小于阈值
+    double dop_value = latest_rtk_data.position_covariance[0];
+
+    // 如果DOP值为0或负数，说明没有有效的DOP信息，我们假设精度良好
+    if (dop_value <= 0)
+    {
+        return true;
+    }
+
+    // 检查DOP值是否在阈值范围内
+    return dop_value <= rtk_dop_threshold;
+}
+
+// 添加保存RTK原点信息的函数
+void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
+{
+    try
+    {
+        // 展开路径中的$(find ...)表达式
+        std::string expanded_path = map_origin_rtk_file_path;
+        size_t pos = expanded_path.find("$(find ");
+        if (pos != std::string::npos)
+        {
+            size_t end_pos = expanded_path.find(")", pos);
+            if (end_pos != std::string::npos)
+            {
+                std::string package_name = expanded_path.substr(pos + 7, end_pos - pos - 7);
+                std::string package_path = ros::package::getPath(package_name);
+                expanded_path.replace(pos, end_pos - pos + 1, package_path);
+            }
+        }
+
+        YAML::Emitter out;
+        out << YAML::BeginMap;
+        out << YAML::Key << "map_origin";
+        out << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "latitude" << YAML::Value << rtk_data.latitude;
+        out << YAML::Key << "longitude" << YAML::Value << rtk_data.longitude;
+        out << YAML::Key << "altitude" << YAML::Value << rtk_data.altitude;
+        out << YAML::Key << "timestamp" << YAML::Value << rtk_data.header.stamp.toSec();
+        out << YAML::Key << "status" << YAML::Value << rtk_data.status.status;
+        out << YAML::Key << "service" << YAML::Value << rtk_data.status.service;
+        // 修改这部分代码，将position_covariance数组转换为YAML序列
+        out << YAML::Key << "position_covariance" << YAML::Value << YAML::Flow << YAML::BeginSeq;
+        for (int i = 0; i < 9; i++) {
+            out << rtk_data.position_covariance[i];
+        }
+        out << YAML::EndSeq;
+        out << YAML::Key << "position_covariance_type" << YAML::Value << rtk_data.position_covariance_type;
+        out << YAML::EndMap;
+        out << YAML::EndMap;
+
+        // 创建目录（如果不存在）
+        size_t last_slash = expanded_path.find_last_of("/");
+        if (last_slash != std::string::npos)
+        {
+            std::string dir = expanded_path.substr(0, last_slash);
+            system(("mkdir -p " + dir).c_str());
+        }
+
+        // 写入文件
+        std::ofstream fout(expanded_path);
+        if (fout.is_open())
+        {
+            fout << out.c_str();
+            fout.close();
+            ROS_INFO("RTK origin information saved to: %s", expanded_path.c_str());
+            rtk_origin_set = true;
+        }
+        else
+        {
+            ROS_ERROR("Failed to open file for writing: %s", expanded_path.c_str());
+        }
+    }
+    catch (const std::exception &e)
+    {
+        ROS_ERROR("Failed to save RTK origin to file: %s", e.what());
+    }
+}
+
+// 添加rtk支持-结束
+
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "laserMapping");
@@ -791,6 +924,11 @@ int main(int argc, char** argv)
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    // 添加rtk支持-开始
+    nh.param<bool>("is_fuse_rtk", is_fuse_rtk, false);
+    nh.param<double>("rtk_dop_threshold", rtk_dop_threshold, 5.0);
+    nh.param<string>("map_origin_rtk_file_path", map_origin_rtk_file_path, "$(find fast_lio)/PCD/map_origin_rtk.yaml");
+    // 添加rtk支持-结束
 
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
@@ -858,7 +996,15 @@ int main(int argc, char** argv)
             ("/Odometry", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
-//------------------------------------------------------------------------------------------------------
+    // 添加rtk支持-开始
+    // 如果启用了RTK融合，则订阅RTK数据
+    if (is_fuse_rtk)
+    {
+        rtk_subscriber = nh.subscribe<sensor_msgs::NavSatFix>("/rtk_gps", 10, rtkCallback);
+        ROS_INFO("RTK fusion enabled, subscribing to /rtk_gps");
+    }
+    // 添加rtk支持-结束
+    //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
@@ -872,6 +1018,32 @@ int main(int argc, char** argv)
             {
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
+
+                // 添加rtk支持-开始
+                // 如果启用了RTK融合且需要保存点云，则检查RTK精度并保存RTK原点信息
+                if (is_fuse_rtk && pcd_save_en)
+                {
+                    // 等待有效的RTK数据
+                    int wait_count = 0;
+                    while (!latest_rtk_data.header.stamp.isValid() && wait_count < 100)
+                    {
+                        ros::spinOnce();
+                        ros::Duration(0.01).sleep();
+                        wait_count++;
+                    }
+
+                    // 检查RTK精度
+                    if (isRTKPrecisionGood())
+                    {
+                        saveRTKOrigin(latest_rtk_data);
+                    }
+                    else
+                    {
+                        ROS_WARN("RTK precision low at map origin, continuing without RTK binding");
+                    }
+                }
+                // 添加rtk支持-结束
+
                 flg_first_scan = false;
                 continue;
             }

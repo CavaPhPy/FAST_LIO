@@ -54,10 +54,18 @@ find_package(catkin REQUIRED COMPONENTS
   livox_ros_driver2
   message_generation
   eigen_conversions
+  # 添加rtk支持-开始
+  # yaml-cpp
+  roslib
+  # 添加rtk支持-结束
 )
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL 1.8 REQUIRED)
+# 添加rtk支持-开始
+# find_package(PkgConfig REQUIRED)
+pkg_check_modules(YAML_CPP REQUIRED yaml-cpp)
+# 添加rtk支持-结束
 
 message(Eigen: ${EIGEN3_INCLUDE_DIR})
 
@@ -66,6 +74,9 @@ include_directories(
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS}
   ${PYTHON_INCLUDE_DIRS}
+  # 添加rtk支持-开始
+  ${YAML_CPP_INCLUDE_DIRS}
+  # 添加rtk支持-结束
   include)
 
 add_message_files(
@@ -82,8 +93,11 @@ catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime
   DEPENDS EIGEN3 PCL
   INCLUDE_DIRS
+  # 添加rtk支持-开始
+  DEPENDS YAML_CPP
+  # 添加rtk支持-结束
 )
 
 add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
-target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
+target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} ${YAML_CPP_LIBRARIES})
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
