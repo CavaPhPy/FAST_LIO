@@ -59,12 +59,12 @@
 #include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
-// 添加rtk支持-开始
+// 添加rtk支持，地图分文件夹保存等新增功能-开始
 #include <sensor_msgs/NavSatFix.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <ros/package.h>
-// 添加rtk支持-结束
+// 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -146,7 +146,7 @@ geometry_msgs::PoseStamped msg_body_pose;
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
-// 添加rtk支持-开始
+// 添加rtk支持，地图分文件夹保存等新增功能-开始
 // 是否融合rtk数据
 bool is_fuse_rtk = false;
 // rtk可信度阈值
@@ -159,7 +159,123 @@ ros::Subscriber rtk_subscriber;
 sensor_msgs::NavSatFix latest_rtk_data;
 // 地图原点文件路径
 std::string map_origin_rtk_file_path;
-// 添加rtk支持-结束
+// 默认地图名称
+string map_name = "default_map";
+// 地图基础路径
+string map_base_path = string(ROOT_DIR) + "PCD/";
+
+// 子地图元数据结构
+struct SubmapMetadata
+{
+    int submap_id;
+    string map_name;
+    Eigen::Vector3d position;
+    Eigen::Quaterniond orientation;
+    Eigen::Vector3d aabb_min;
+    Eigen::Vector3d aabb_max;
+    double timestamp;
+    string file_path;
+    int point_count;
+};
+
+/**
+ * 
+ * @brief 保存子地图元数据的函数
+ * 
+ * @details
+ * submap_id: 1  // 子地图ID
+ * map_name: default_map  // 地图名称
+ * world_pose:   // 该子地图中心在世界坐标系下的位姿 (x, y, z, qx, qy, qz, qw)
+ *   position:
+ *     x: 0.0
+ *     y: 0.0
+ *     z: 0.0
+ *   orientation:
+ *     x: 0.0
+ *     y: 0.0
+ *     z: 0.0
+ *     w: 1.0
+ * aabb:         // 子地图点云的AABB包围盒的min和max点（用于快速判断当前位置可能属于哪个子地图）
+ *   min:
+ *     x: -100.0
+ *     y: -100.0
+ *     z: -10.0
+ *   max:
+ *     x: 100.0
+ *     y: 100.0
+ *     z: 10.0
+ * timestamp: 1234567890.123  // 创建时间
+ * file_path: "submap_0000001.pcd"  // 对应的PCD文件路径
+ * point_count: 50000  // 子地图点云数量
+ */
+void saveSubmapMetadata(const SubmapMetadata &metadata)
+{
+    // 创建地图文件夹路径
+    string map_dir = map_base_path + metadata.map_name + "/";
+    string metadata_file = map_dir + metadata.file_path.substr(0, metadata.file_path.find_last_of('.')) + ".yaml";
+
+    YAML::Emitter out;
+    out << YAML::BeginMap;
+    out << YAML::Key << "submap_id" << YAML::Value << metadata.submap_id;
+    out << YAML::Key << "map_name" << YAML::Value << metadata.map_name; // 添加地图名称
+    out << YAML::Key << "world_pose" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "position" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "x" << YAML::Value << metadata.position.x();
+    out << YAML::Key << "y" << YAML::Value << metadata.position.y();
+    out << YAML::Key << "z" << YAML::Value << metadata.position.z();
+    out << YAML::EndMap;
+    out << YAML::Key << "orientation" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "x" << YAML::Value << metadata.orientation.x();
+    out << YAML::Key << "y" << YAML::Value << metadata.orientation.y();
+    out << YAML::Key << "z" << YAML::Value << metadata.orientation.z();
+    out << YAML::Key << "w" << YAML::Value << metadata.orientation.w();
+    out << YAML::EndMap;
+    out << YAML::EndMap;
+    out << YAML::Key << "aabb" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "min" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "x" << YAML::Value << metadata.aabb_min.x();
+    out << YAML::Key << "y" << YAML::Value << metadata.aabb_min.y();
+    out << YAML::Key << "z" << YAML::Value << metadata.aabb_min.z();
+    out << YAML::EndMap;
+    out << YAML::Key << "max" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "x" << YAML::Value << metadata.aabb_max.x();
+    out << YAML::Key << "y" << YAML::Value << metadata.aabb_max.y();
+    out << YAML::Key << "z" << YAML::Value << metadata.aabb_max.z();
+    out << YAML::EndMap;
+    out << YAML::EndMap;
+    out << YAML::Key << "timestamp" << YAML::Value << metadata.timestamp;
+    out << YAML::Key << "file_path" << YAML::Value << metadata.file_path;
+    out << YAML::Key << "point_count" << YAML::Value << metadata.point_count;
+    out << YAML::EndMap;
+
+    // 确保目录存在
+    system(("mkdir -p " + map_dir).c_str());
+
+    ofstream fout(metadata_file);
+    fout << out.c_str();
+    fout.close();
+}
+
+// 计算点云AABB包围盒
+void calculateAABB(PointCloudXYZI::Ptr cloud, Eigen::Vector3d &min_pt, Eigen::Vector3d &max_pt)
+{
+    if (cloud->empty())
+        return;
+
+    min_pt = Eigen::Vector3d(cloud->points[0].x, cloud->points[0].y, cloud->points[0].z);
+    max_pt = Eigen::Vector3d(cloud->points[0].x, cloud->points[0].y, cloud->points[0].z);
+
+    for (const auto &pt : cloud->points)
+    {
+        min_pt.x() = std::min(min_pt.x(), (double)pt.x);
+        min_pt.y() = std::min(min_pt.y(), (double)pt.y);
+        min_pt.z() = std::min(min_pt.z(), (double)pt.z);
+        max_pt.x() = std::max(max_pt.x(), (double)pt.x);
+        max_pt.y() = std::max(max_pt.y(), (double)pt.y);
+        max_pt.z() = std::max(max_pt.z(), (double)pt.z);
+    }
+}
+// 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 void SigHandle(int sig)
 {
@@ -536,14 +652,37 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         *pcl_wait_save += *laserCloudWorld;
 
         static int scan_wait_num = 0;
-        scan_wait_num ++;
-        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
+        scan_wait_num++;
+        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0 && scan_wait_num >= pcd_save_interval)
         {
-            pcd_index ++;
-            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+            pcd_index++;
+            // 使用地图名称创建子图文件名和路径
+            string map_dir = map_base_path + map_name + "/";
+            string pcd_filename = "submap_" + to_string(pcd_index) + ".pcd";
+            string all_points_dir = map_dir + pcd_filename;
+
+            // 确保目录存在
+            system(("mkdir -p " + map_dir).c_str());
+
             pcl::PCDWriter pcd_writer;
-            cout << "current scan saved to /PCD/" << all_points_dir << endl;
+            cout << "current scan saved to " << all_points_dir << endl;
             pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+
+            // 创建并保存元数据
+            SubmapMetadata metadata;
+            metadata.submap_id = pcd_index;
+            metadata.map_name = map_name; // 设置地图名称
+            metadata.position = state_point.pos;
+            metadata.orientation = state_point.rot;
+            metadata.timestamp = ros::Time::now().toSec();
+            metadata.file_path = pcd_filename;
+            metadata.point_count = pcl_wait_save->size();
+
+            // 计算AABB包围盒
+            calculateAABB(pcl_wait_save, metadata.aabb_min, metadata.aabb_max);
+
+            saveSubmapMetadata(metadata);
+
             pcl_wait_save->clear();
             scan_wait_num = 0;
         }
@@ -774,7 +913,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     solve_time += omp_get_wtime() - solve_start_;
 }
 
-// 添加rtk支持-开始
+// 添加rtk支持，地图分文件夹保存等新增功能-开始
 
 // 添加RTK回调函数
 void rtkCallback(const sensor_msgs::NavSatFix::ConstPtr &msg)
@@ -822,24 +961,16 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
 {
     try
     {
-        // 展开路径中的$(find ...)表达式
-        std::string expanded_path = map_origin_rtk_file_path;
-        size_t pos = expanded_path.find("$(find ");
-        if (pos != std::string::npos)
-        {
-            size_t end_pos = expanded_path.find(")", pos);
-            if (end_pos != std::string::npos)
-            {
-                std::string package_name = expanded_path.substr(pos + 7, end_pos - pos - 7);
-                std::string package_path = ros::package::getPath(package_name);
-                expanded_path.replace(pos, end_pos - pos + 1, package_path);
-            }
-        }
+        // 使用地图名称创建路径
+        string map_dir = map_base_path + map_name + "/";
+        string rtk_file_path = map_dir + "map_origin_rtk.yaml";
+        
+        // 确保目录存在
+        system(("mkdir -p " + map_dir).c_str());
 
         YAML::Emitter out;
         out << YAML::BeginMap;
-        out << YAML::Key << "map_origin";
-        out << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "map_origin" << YAML::Value << YAML::BeginMap;
         out << YAML::Key << "latitude" << YAML::Value << rtk_data.latitude;
         out << YAML::Key << "longitude" << YAML::Value << rtk_data.longitude;
         out << YAML::Key << "altitude" << YAML::Value << rtk_data.altitude;
@@ -856,26 +987,17 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
         out << YAML::EndMap;
         out << YAML::EndMap;
 
-        // 创建目录（如果不存在）
-        size_t last_slash = expanded_path.find_last_of("/");
-        if (last_slash != std::string::npos)
-        {
-            std::string dir = expanded_path.substr(0, last_slash);
-            system(("mkdir -p " + dir).c_str());
-        }
-
-        // 写入文件
-        std::ofstream fout(expanded_path);
+        std::ofstream fout(rtk_file_path);
         if (fout.is_open())
         {
             fout << out.c_str();
             fout.close();
-            ROS_INFO("RTK origin information saved to: %s", expanded_path.c_str());
+            ROS_INFO("RTK origin information saved to: %s", rtk_file_path.c_str());
             rtk_origin_set = true;
         }
         else
         {
-            ROS_ERROR("Failed to open file for writing: %s", expanded_path.c_str());
+            ROS_ERROR("Failed to open file for writing: %s", rtk_file_path.c_str());
         }
     }
     catch (const std::exception &e)
@@ -884,7 +1006,7 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
     }
 }
 
-// 添加rtk支持-结束
+// 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 int main(int argc, char** argv)
 {
@@ -924,11 +1046,19 @@ int main(int argc, char** argv)
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
-    // 添加rtk支持-开始
+    // 添加rtk支持，地图分文件夹保存等新增功能-开始
     nh.param<bool>("is_fuse_rtk", is_fuse_rtk, false);
     nh.param<double>("rtk_dop_threshold", rtk_dop_threshold, 5.0);
-    nh.param<string>("map_origin_rtk_file_path", map_origin_rtk_file_path, "$(find fast_lio)/PCD/map_origin_rtk.yaml");
-    // 添加rtk支持-结束
+    // 添加地图名称参数
+    nh.param<string>("map_base_path", map_base_path, string(ROOT_DIR) + "PCD/");
+    nh.param<string>("map_name", map_name, "default_map");
+    // 确保基础路径以/结尾
+    if (map_base_path.back() != '/')
+    {
+        map_base_path += "/";
+    }
+    nh.param<string>("map_origin_rtk_file_path", map_origin_rtk_file_path, map_base_path + map_name + "/map_origin_rtk.yaml");
+    // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
@@ -996,14 +1126,14 @@ int main(int argc, char** argv)
             ("/Odometry", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
-    // 添加rtk支持-开始
+    // 添加rtk支持，地图分文件夹保存等新增功能-开始
     // 如果启用了RTK融合，则订阅RTK数据
     if (is_fuse_rtk)
     {
         rtk_subscriber = nh.subscribe<sensor_msgs::NavSatFix>("/rtk_gps", 10, rtkCallback);
         ROS_INFO("RTK fusion enabled, subscribing to /rtk_gps");
     }
-    // 添加rtk支持-结束
+    // 添加rtk支持，地图分文件夹保存等新增功能-结束
     //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
@@ -1019,7 +1149,7 @@ int main(int argc, char** argv)
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
 
-                // 添加rtk支持-开始
+                // 添加rtk支持，地图分文件夹保存等新增功能-开始
                 // 如果启用了RTK融合且需要保存点云，则检查RTK精度并保存RTK原点信息
                 if (is_fuse_rtk && pcd_save_en)
                 {
@@ -1042,7 +1172,7 @@ int main(int argc, char** argv)
                         ROS_WARN("RTK precision low at map origin, continuing without RTK binding");
                     }
                 }
-                // 添加rtk支持-结束
+                // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
                 flg_first_scan = false;
                 continue;
@@ -1195,11 +1325,33 @@ int main(int argc, char** argv)
     /* 2. pcd save will largely influence the real-time performences **/
     if (pcl_wait_save->size() > 0 && pcd_save_en)
     {
-        string file_name = string("scans.pcd");
-        string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+        pcd_index++;
+        // 使用地图名称创建子图文件名和路径
+        string map_dir = map_base_path + map_name + "/";
+        string pcd_filename = "submap_" + to_string(pcd_index) + ".pcd";
+        string all_points_dir = map_dir + pcd_filename;
+
+        // 保存点云
         pcl::PCDWriter pcd_writer;
-        cout << "current scan saved to /PCD/" << file_name<<endl;
+        cout << "current scan saved to " << all_points_dir << endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+
+        // 创建并保存元数据
+        SubmapMetadata metadata;
+        metadata.submap_id = pcd_index;
+        metadata.map_name = map_name; // 设置地图名称
+        metadata.position = state_point.pos;
+        metadata.orientation = state_point.rot;
+        metadata.timestamp = ros::Time::now().toSec();
+        metadata.file_path = pcd_filename;
+        metadata.point_count = pcl_wait_save->size();
+
+        // 计算AABB包围盒
+        calculateAABB(pcl_wait_save, metadata.aabb_min, metadata.aabb_max);
+
+        saveSubmapMetadata(metadata);
+
+        pcl_wait_save->clear();
     }
 
     fout_out.close();
