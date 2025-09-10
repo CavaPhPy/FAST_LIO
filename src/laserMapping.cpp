@@ -64,6 +64,8 @@
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <ros/package.h>
+#include <sys/stat.h>
+#include <errno.h>
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 #define INIT_TIME           (0.1)
@@ -249,7 +251,11 @@ void saveSubmapMetadata(const SubmapMetadata &metadata)
     out << YAML::EndMap;
 
     // 确保目录存在
-    system(("mkdir -p " + map_dir).c_str());
+    int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    if (status == -1 && errno != EEXIST)
+    {
+        ROS_ERROR("Failed to create directory: %s", strerror(errno));
+    }
 
     ofstream fout(metadata_file);
     fout << out.c_str();
@@ -662,7 +668,11 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
             string all_points_dir = map_dir + pcd_filename;
 
             // 确保目录存在
-            system(("mkdir -p " + map_dir).c_str());
+            int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+            if (status == -1 && errno != EEXIST)
+            {
+                ROS_ERROR("Failed to create directory: %s", strerror(errno));
+            }
 
             pcl::PCDWriter pcd_writer;
             cout << "current scan saved to " << all_points_dir << endl;
@@ -966,7 +976,11 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
         string rtk_file_path = map_dir + "map_origin_rtk.yaml";
         
         // 确保目录存在
-        system(("mkdir -p " + map_dir).c_str());
+        int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+        if (status == -1 && errno != EEXIST)
+        {
+            ROS_ERROR("Failed to create directory: %s", strerror(errno));
+        }
 
         YAML::Emitter out;
         out << YAML::BeginMap;
@@ -1330,6 +1344,13 @@ int main(int argc, char** argv)
         string map_dir = map_base_path + map_name + "/";
         string pcd_filename = "submap_" + to_string(pcd_index) + ".pcd";
         string all_points_dir = map_dir + pcd_filename;
+
+        // 确保目录存在
+        int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+        if (status == -1 && errno != EEXIST)
+        {
+            ROS_ERROR("Failed to create directory: %s", strerror(errno));
+        }
 
         // 保存点云
         pcl::PCDWriter pcd_writer;
