@@ -60,12 +60,12 @@
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 // 添加rtk支持，地图分文件夹保存等新增功能-开始
-#include <sensor_msgs/NavSatFix.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <ros/package.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <slam_utils/RTKData.h>
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 #define INIT_TIME           (0.1)
@@ -151,20 +151,29 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 // 添加rtk支持，地图分文件夹保存等新增功能-开始
 // 是否融合rtk数据
 bool is_fuse_rtk = false;
-// rtk可信度阈值
-double rtk_dop_threshold = 5.0;
 // 是否已经绑定了地图原点
 bool rtk_origin_set = false;
 // rtk订阅者
-ros::Subscriber rtk_subscriber;
-// 最新的rtk数据
-sensor_msgs::NavSatFix latest_rtk_data;
+ros::Subscriber rtk_full_subscriber;
 // 地图原点文件路径
 std::string map_origin_rtk_file_path;
 // 默认地图名称
 string map_name = "default_map";
 // 地图基础路径
 string map_base_path = string(ROOT_DIR) + "PCD/";
+// RTK等待超时时间（秒）
+double rtk_wait_timeout = 60.0;
+
+// 添加全局变量或类成员变量来存储RTK数据
+
+// 最新的自定义rtk数据
+slam_utils::RTKData latest_rtk_data;
+// 添加自定义RTK数据互斥锁
+std::mutex rtk_data_mutex; 
+// 上一次接收的RTK数据时间
+ros::Time last_rtk_time;
+// 设置RTK数据超时时间（秒）
+const double RTK_TIMEOUT = 3.0;
 
 // 子地图元数据结构
 struct SubmapMetadata
@@ -925,56 +934,60 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
 // 添加rtk支持，地图分文件夹保存等新增功能-开始
 
-// 添加RTK回调函数
-void rtkCallback(const sensor_msgs::NavSatFix::ConstPtr &msg)
+// 自定义RTK数据回调函数
+void rtkDataCallback(const slam_utils::RTKData::ConstPtr &msg)
 {
+    ROS_INFO("RTK data callback triggered"); 
+    std::lock_guard<std::mutex> lock(rtk_data_mutex);
     latest_rtk_data = *msg;
+    last_rtk_time = ros::Time::now();
+
+    ROS_INFO("Received RTK data: lat=%f, lon=%f, heading=%f, quality=%d",
+             msg->latitude, msg->longitude, msg->heading, msg->position_quality);
 }
 
-// 添加检查RTK精度的函数
+// 检查RTK精度是否良好
 bool isRTKPrecisionGood()
 {
-    // 检查是否有有效的RTK数据
-    if (!latest_rtk_data.header.stamp.isValid())
+    slam_utils::RTKData local_rtk_data;
+    ros::Time local_last_rtk_time;
+
     {
+        std::lock_guard<std::mutex> lock(rtk_data_mutex);
+        local_rtk_data = latest_rtk_data;
+        local_last_rtk_time = last_rtk_time;
+    }
+
+    // 首先检查数据是否有效
+    if (!last_rtk_time.isValid() ||
+        (ros::Time::now() - last_rtk_time).toSec() >= RTK_TIMEOUT)
+    {
+        // ROS_INFO("LAST RTK DATA TIME NOT VALID! WAITTING FOR NEW RTK DATA");
         return false;
     }
 
-    // 检查RTK状态是否为FIX状态
-    if (latest_rtk_data.status.status != sensor_msgs::NavSatStatus::STATUS_FIX)
-    {
-        return false;
-    }
-
-    // 检查DOP值（使用position_covariance[0]作为示例）
-    // 如果position_covariance_type为COVARIANCE_TYPE_UNKNOWN，则假设精度良好
-    if (latest_rtk_data.position_covariance_type == sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN)
+    // 检查RTK状态是否为FIX状态（SBAS或GBAS）
+    // 只有RTK解（SBAS或GBAS）才认为精度良好
+    if (latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_SBAS_FIX ||
+        latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_GBAS_FIX)
     {
         return true;
     }
 
-    // 检查position_covariance[0]是否小于阈值
-    double dop_value = latest_rtk_data.position_covariance[0];
-
-    // 如果DOP值为0或负数，说明没有有效的DOP信息，我们假设精度良好
-    if (dop_value <= 0)
-    {
-        return true;
-    }
-
-    // 检查DOP值是否在阈值范围内
-    return dop_value <= rtk_dop_threshold;
+    ROS_INFO("RTK PRECISION IS NOT GOOD! WAITTING FOR NEW RTK DATA");
+    // 其他状态（包括NO_FIX和FIX）都认为精度不够好
+    return false;
 }
 
 // 添加保存RTK原点信息的函数
-void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
+void saveRTKOrigin(const slam_utils::RTKData &rtk_data)
 {
     try
     {
         // 使用地图名称创建路径
         string map_dir = map_base_path + map_name + "/";
         string rtk_file_path = map_dir + "map_origin_rtk.yaml";
-        
+
         // 确保目录存在
         int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
         if (status == -1 && errno != EEXIST)
@@ -985,19 +998,48 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
         YAML::Emitter out;
         out << YAML::BeginMap;
         out << YAML::Key << "map_origin" << YAML::Value << YAML::BeginMap;
+        // 纬度(单位:度) - WGS84坐标系下的纬度
         out << YAML::Key << "latitude" << YAML::Value << rtk_data.latitude;
+        // 经度(单位:度) - WGS84坐标系下的经度
         out << YAML::Key << "longitude" << YAML::Value << rtk_data.longitude;
+        // 海拔高度(单位:米) - 相对于WGS84椭球面的海拔高度
         out << YAML::Key << "altitude" << YAML::Value << rtk_data.altitude;
+        // 航向角(单位:度) - 当前朝向角度
+        out << YAML::Key << "heading" << YAML::Value << rtk_data.heading;
+        // 俯仰角(单位:度) - 当前俯仰角度
+        out << YAML::Key << "pitch" << YAML::Value << rtk_data.pitch;
+        // 横滚角(单位:度) - 当前横滚角度
+        out << YAML::Key << "roll" << YAML::Value << rtk_data.roll;
+        // 真实轨迹角(单位:度) - 真实运动轨迹角度
+        out << YAML::Key << "track_true" << YAML::Value << rtk_data.track_true;
+        // 水平速度(单位:km/h) - 当前水平运动速度
+        out << YAML::Key << "velocity" << YAML::Value << rtk_data.velocity;
+        // 东向速度(单位:km/h) - 东向运动速度分量
+        out << YAML::Key << "east_vel" << YAML::Value << rtk_data.east_vel;
+        // 北向速度(单位:km/h) - 北向运动速度分量
+        out << YAML::Key << "north_vel" << YAML::Value << rtk_data.north_vel;
+        // 天向速度(单位:km/h) - 天向运动速度分量
+        out << YAML::Key << "up_vel" << YAML::Value << rtk_data.up_vel;
+        // 定位质量 - 定位精度标识(0=无效, 1=单点定位, 2=RTK浮点解, 3=RTK固定解)
+        out << YAML::Key << "position_quality" << YAML::Value << rtk_data.position_quality;
+        // 定向质量 - 定向精度标识(0=无效, 1=单点定位, 2=RTK浮点解, 3=RTK固定解)
+        out << YAML::Key << "heading_quality" << YAML::Value << rtk_data.heading_quality;
+        // 从天线参与解算的卫星数 - 参与解算的卫星数量
+        out << YAML::Key << "hsoln_svs" << YAML::Value << rtk_data.hsoln_svs;
+        // 主天线参与解算的卫星数 - 主天线参与解算的卫星数量
+        out << YAML::Key << "msoln_svs" << YAML::Value << rtk_data.msoln_svs;
+        // 东向位置(单位:米) - 以基准站为原点的地理坐标系下的东向位置
+        out << YAML::Key << "east" << YAML::Value << rtk_data.east;
+        // 北向位置(单位:米) - 以基准站为原点的地理坐标系下的北向位置
+        out << YAML::Key << "north" << YAML::Value << rtk_data.north;
+        // 天向位置(单位:米) - 以基准站为原点的地理坐标系下的天向位置
+        out << YAML::Key << "up" << YAML::Value << rtk_data.up;
+        // 时间戳(单位:秒) - 数据采集的时间戳
         out << YAML::Key << "timestamp" << YAML::Value << rtk_data.header.stamp.toSec();
-        out << YAML::Key << "status" << YAML::Value << rtk_data.status.status;
+        // 状态 - GPS修复状态(-1=无修复,0=标准修复,1=SBAS修复,2=GBAS修复)
+        out << YAML::Key << "status" << YAML::Value << static_cast<int>(rtk_data.status.status);
+        // 服务类型 - 使用的GNSS服务类型(位标志:1=GPS,2=GLONASS,4=COMPASS,8=GALILEO)
         out << YAML::Key << "service" << YAML::Value << rtk_data.status.service;
-        // 修改这部分代码，将position_covariance数组转换为YAML序列
-        out << YAML::Key << "position_covariance" << YAML::Value << YAML::Flow << YAML::BeginSeq;
-        for (int i = 0; i < 9; i++) {
-            out << rtk_data.position_covariance[i];
-        }
-        out << YAML::EndSeq;
-        out << YAML::Key << "position_covariance_type" << YAML::Value << rtk_data.position_covariance_type;
         out << YAML::EndMap;
         out << YAML::EndMap;
 
@@ -1019,7 +1061,6 @@ void saveRTKOrigin(const sensor_msgs::NavSatFix &rtk_data)
         ROS_ERROR("Failed to save RTK origin to file: %s", e.what());
     }
 }
-
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 int main(int argc, char** argv)
@@ -1062,10 +1103,11 @@ int main(int argc, char** argv)
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
     // 添加rtk支持，地图分文件夹保存等新增功能-开始
     nh.param<bool>("is_fuse_rtk", is_fuse_rtk, false);
-    nh.param<double>("rtk_dop_threshold", rtk_dop_threshold, 5.0);
     // 添加地图名称参数
     nh.param<string>("map_base_path", map_base_path, string(ROOT_DIR) + "PCD/");
     nh.param<string>("map_name", map_name, "default_map");
+    // 添加RTK等待超时时间参数，默认10秒
+    nh.param<double>("rtk_wait_timeout", rtk_wait_timeout, 60.0);
     // 确保基础路径以/结尾
     if (map_base_path.back() != '/')
     {
@@ -1142,16 +1184,18 @@ int main(int argc, char** argv)
             ("/path", 100000);
     // 添加rtk支持，地图分文件夹保存等新增功能-开始
     // 如果启用了RTK融合，则订阅RTK数据
+    ros::Subscriber rtk_subscriber;
     if (is_fuse_rtk)
     {
-        rtk_subscriber = nh.subscribe<sensor_msgs::NavSatFix>("/rtk_gps", 10, rtkCallback);
-        ROS_INFO("RTK fusion enabled, subscribing to /rtk_gps");
+        rtk_subscriber = nh.subscribe<slam_utils::RTKData>("/rtk_data", 10, rtkDataCallback);
+        ROS_INFO("RTK fusion enabled, subscribing to /rtk_data");
     }
     // 添加rtk支持，地图分文件夹保存等新增功能-结束
     //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
+    ROS_INFO("Entering main loop"); 
     while (status)
     {
         if (flg_exit) break;
@@ -1165,15 +1209,22 @@ int main(int argc, char** argv)
 
                 // 添加rtk支持，地图分文件夹保存等新增功能-开始
                 // 如果启用了RTK融合且需要保存点云，则检查RTK精度并保存RTK原点信息
+                ROS_INFO("first scan now the param is_fuse_rtk is %s , pcd_save_en is %s", is_fuse_rtk ? "true" : "false", pcd_save_en ? "true" : "false");
                 if (is_fuse_rtk && pcd_save_en)
                 {
-                    // 等待有效的RTK数据
-                    int wait_count = 0;
-                    while (!latest_rtk_data.header.stamp.isValid() && wait_count < 100)
+                    // 等待有效的RTK数据，直到获得足够精度的RTK数据或超时
+                    ros::Time wait_start_time = ros::Time::now();
+                    while (!isRTKPrecisionGood())
                     {
                         ros::spinOnce();
-                        ros::Duration(0.01).sleep();
-                        wait_count++;
+                        ros::Duration(0.01).sleep(); // 短暂休眠避免过度占用CPU
+
+                        // 检查是否超时
+                        if ((ros::Time::now() - wait_start_time).toSec() >= rtk_wait_timeout)
+                        {
+                            ROS_WARN("RTK data wait timeout (%.1f seconds), continuing without RTK binding", rtk_wait_timeout);
+                            break;
+                        }
                     }
 
                     // 检查RTK精度

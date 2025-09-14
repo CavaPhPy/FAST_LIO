@@ -9,3 +9,6 @@ PCD/*.pcd
 PCD/scans.pgm
 PCD/scans.yaml
 PCD/scans.yaml.backup
+
+PCD/*
+!/PCD/1
