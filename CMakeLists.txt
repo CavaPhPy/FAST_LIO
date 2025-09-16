@@ -55,8 +55,8 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   eigen_conversions
   # 添加rtk支持-开始
-  # yaml-cpp
   roslib
+  slam_utils
   # 添加rtk支持-结束
 )
 
@@ -90,14 +90,11 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime
-  DEPENDS EIGEN3 PCL
+  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime slam_utils
+  DEPENDS EIGEN3 PCL YAML_CPP
   INCLUDE_DIRS
-  # 添加rtk支持-开始
-  DEPENDS YAML_CPP
-  # 添加rtk支持-结束
 )
 
 add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
-target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} ${YAML_CPP_LIBRARIES})
+target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} ${YAML_CPP_LIBRARIES} map_utils)
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})

@@ -66,6 +66,8 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <slam_utils/RTKData.h>
+#include <slam_utils/map/submap_manager.h>
+#include <slam_utils/map/rtk_origin.h>
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 #define INIT_TIME           (0.1)
@@ -175,121 +177,10 @@ ros::Time last_rtk_time;
 // 设置RTK数据超时时间（秒）
 const double RTK_TIMEOUT = 3.0;
 
-// 子地图元数据结构
-struct SubmapMetadata
-{
-    int submap_id;
-    string map_name;
-    Eigen::Vector3d position;
-    Eigen::Quaterniond orientation;
-    Eigen::Vector3d aabb_min;
-    Eigen::Vector3d aabb_max;
-    double timestamp;
-    string file_path;
-    int point_count;
-};
-
-/**
- * 
- * @brief 保存子地图元数据的函数
- * 
- * @details
- * submap_id: 1  // 子地图ID
- * map_name: default_map  // 地图名称
- * world_pose:   // 该子地图中心在世界坐标系下的位姿 (x, y, z, qx, qy, qz, qw)
- *   position:
- *     x: 0.0
- *     y: 0.0
- *     z: 0.0
- *   orientation:
- *     x: 0.0
- *     y: 0.0
- *     z: 0.0
- *     w: 1.0
- * aabb:         // 子地图点云的AABB包围盒的min和max点（用于快速判断当前位置可能属于哪个子地图）
- *   min:
- *     x: -100.0
- *     y: -100.0
- *     z: -10.0
- *   max:
- *     x: 100.0
- *     y: 100.0
- *     z: 10.0
- * timestamp: 1234567890.123  // 创建时间
- * file_path: "submap_0000001.pcd"  // 对应的PCD文件路径
- * point_count: 50000  // 子地图点云数量
- */
-void saveSubmapMetadata(const SubmapMetadata &metadata)
-{
-    // 创建地图文件夹路径
-    string map_dir = map_base_path + metadata.map_name + "/";
-    string metadata_file = map_dir + metadata.file_path.substr(0, metadata.file_path.find_last_of('.')) + ".yaml";
-
-    YAML::Emitter out;
-    out << YAML::BeginMap;
-    out << YAML::Key << "submap_id" << YAML::Value << metadata.submap_id;
-    out << YAML::Key << "map_name" << YAML::Value << metadata.map_name; // 添加地图名称
-    out << YAML::Key << "world_pose" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "position" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "x" << YAML::Value << metadata.position.x();
-    out << YAML::Key << "y" << YAML::Value << metadata.position.y();
-    out << YAML::Key << "z" << YAML::Value << metadata.position.z();
-    out << YAML::EndMap;
-    out << YAML::Key << "orientation" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "x" << YAML::Value << metadata.orientation.x();
-    out << YAML::Key << "y" << YAML::Value << metadata.orientation.y();
-    out << YAML::Key << "z" << YAML::Value << metadata.orientation.z();
-    out << YAML::Key << "w" << YAML::Value << metadata.orientation.w();
-    out << YAML::EndMap;
-    out << YAML::EndMap;
-    out << YAML::Key << "aabb" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "min" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "x" << YAML::Value << metadata.aabb_min.x();
-    out << YAML::Key << "y" << YAML::Value << metadata.aabb_min.y();
-    out << YAML::Key << "z" << YAML::Value << metadata.aabb_min.z();
-    out << YAML::EndMap;
-    out << YAML::Key << "max" << YAML::Value << YAML::BeginMap;
-    out << YAML::Key << "x" << YAML::Value << metadata.aabb_max.x();
-    out << YAML::Key << "y" << YAML::Value << metadata.aabb_max.y();
-    out << YAML::Key << "z" << YAML::Value << metadata.aabb_max.z();
-    out << YAML::EndMap;
-    out << YAML::EndMap;
-    out << YAML::Key << "timestamp" << YAML::Value << metadata.timestamp;
-    out << YAML::Key << "file_path" << YAML::Value << metadata.file_path;
-    out << YAML::Key << "point_count" << YAML::Value << metadata.point_count;
-    out << YAML::EndMap;
-
-    // 确保目录存在
-    int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    if (status == -1 && errno != EEXIST)
-    {
-        ROS_ERROR("Failed to create directory: %s", strerror(errno));
-    }
-
-    ofstream fout(metadata_file);
-    fout << out.c_str();
-    fout.close();
-}
-
-// 计算点云AABB包围盒
-void calculateAABB(PointCloudXYZI::Ptr cloud, Eigen::Vector3d &min_pt, Eigen::Vector3d &max_pt)
-{
-    if (cloud->empty())
-        return;
-
-    min_pt = Eigen::Vector3d(cloud->points[0].x, cloud->points[0].y, cloud->points[0].z);
-    max_pt = Eigen::Vector3d(cloud->points[0].x, cloud->points[0].y, cloud->points[0].z);
-
-    for (const auto &pt : cloud->points)
-    {
-        min_pt.x() = std::min(min_pt.x(), (double)pt.x);
-        min_pt.y() = std::min(min_pt.y(), (double)pt.y);
-        min_pt.z() = std::min(min_pt.z(), (double)pt.z);
-        max_pt.x() = std::max(max_pt.x(), (double)pt.x);
-        max_pt.y() = std::max(max_pt.y(), (double)pt.y);
-        max_pt.z() = std::max(max_pt.z(), (double)pt.z);
-    }
-}
+// 子地图管理器
+std::unique_ptr<SubmapManager> submap_manager;
+// RTK原点
+RTKOrigin rtk_origin;
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 void SigHandle(int sig)
@@ -676,6 +567,7 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
             string pcd_filename = "submap_" + to_string(pcd_index) + ".pcd";
             string all_points_dir = map_dir + pcd_filename;
 
+            
             // 确保目录存在
             int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
             if (status == -1 && errno != EEXIST)
@@ -698,9 +590,12 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
             metadata.point_count = pcl_wait_save->size();
 
             // 计算AABB包围盒
-            calculateAABB(pcl_wait_save, metadata.aabb_min, metadata.aabb_max);
+            Eigen::Vector3d min_pt, max_pt;
+            submap_manager->calculateAABB(pcl_wait_save, min_pt, max_pt);
+            metadata.aabb_min = min_pt;
+            metadata.aabb_max = max_pt;
 
-            saveSubmapMetadata(metadata);
+            submap_manager->saveSubmapMetadata(metadata);
 
             pcl_wait_save->clear();
             scan_wait_num = 0;
@@ -979,88 +874,6 @@ bool isRTKPrecisionGood()
     return false;
 }
 
-// 添加保存RTK原点信息的函数
-void saveRTKOrigin(const slam_utils::RTKData &rtk_data)
-{
-    try
-    {
-        // 使用地图名称创建路径
-        string map_dir = map_base_path + map_name + "/";
-        string rtk_file_path = map_dir + "map_origin_rtk.yaml";
-
-        // 确保目录存在
-        int status = mkdir(map_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-        if (status == -1 && errno != EEXIST)
-        {
-            ROS_ERROR("Failed to create directory: %s", strerror(errno));
-        }
-
-        YAML::Emitter out;
-        out << YAML::BeginMap;
-        out << YAML::Key << "map_origin" << YAML::Value << YAML::BeginMap;
-        // 纬度(单位:度) - WGS84坐标系下的纬度
-        out << YAML::Key << "latitude" << YAML::Value << rtk_data.latitude;
-        // 经度(单位:度) - WGS84坐标系下的经度
-        out << YAML::Key << "longitude" << YAML::Value << rtk_data.longitude;
-        // 海拔高度(单位:米) - 相对于WGS84椭球面的海拔高度
-        out << YAML::Key << "altitude" << YAML::Value << rtk_data.altitude;
-        // 航向角(单位:度) - 当前朝向角度
-        out << YAML::Key << "heading" << YAML::Value << rtk_data.heading;
-        // 俯仰角(单位:度) - 当前俯仰角度
-        out << YAML::Key << "pitch" << YAML::Value << rtk_data.pitch;
-        // 横滚角(单位:度) - 当前横滚角度
-        out << YAML::Key << "roll" << YAML::Value << rtk_data.roll;
-        // 真实轨迹角(单位:度) - 真实运动轨迹角度
-        out << YAML::Key << "track_true" << YAML::Value << rtk_data.track_true;
-        // 水平速度(单位:km/h) - 当前水平运动速度
-        out << YAML::Key << "velocity" << YAML::Value << rtk_data.velocity;
-        // 东向速度(单位:km/h) - 东向运动速度分量
-        out << YAML::Key << "east_vel" << YAML::Value << rtk_data.east_vel;
-        // 北向速度(单位:km/h) - 北向运动速度分量
-        out << YAML::Key << "north_vel" << YAML::Value << rtk_data.north_vel;
-        // 天向速度(单位:km/h) - 天向运动速度分量
-        out << YAML::Key << "up_vel" << YAML::Value << rtk_data.up_vel;
-        // 定位质量 - 定位精度标识(0=无效, 1=单点定位, 2=RTK浮点解, 3=RTK固定解)
-        out << YAML::Key << "position_quality" << YAML::Value << rtk_data.position_quality;
-        // 定向质量 - 定向精度标识(0=无效, 1=单点定位, 2=RTK浮点解, 3=RTK固定解)
-        out << YAML::Key << "heading_quality" << YAML::Value << rtk_data.heading_quality;
-        // 从天线参与解算的卫星数 - 参与解算的卫星数量
-        out << YAML::Key << "hsoln_svs" << YAML::Value << rtk_data.hsoln_svs;
-        // 主天线参与解算的卫星数 - 主天线参与解算的卫星数量
-        out << YAML::Key << "msoln_svs" << YAML::Value << rtk_data.msoln_svs;
-        // 东向位置(单位:米) - 以基准站为原点的地理坐标系下的东向位置
-        out << YAML::Key << "east" << YAML::Value << rtk_data.east;
-        // 北向位置(单位:米) - 以基准站为原点的地理坐标系下的北向位置
-        out << YAML::Key << "north" << YAML::Value << rtk_data.north;
-        // 天向位置(单位:米) - 以基准站为原点的地理坐标系下的天向位置
-        out << YAML::Key << "up" << YAML::Value << rtk_data.up;
-        // 时间戳(单位:秒) - 数据采集的时间戳
-        out << YAML::Key << "timestamp" << YAML::Value << rtk_data.header.stamp.toSec();
-        // 状态 - GPS修复状态(-1=无修复,0=标准修复,1=SBAS修复,2=GBAS修复)
-        out << YAML::Key << "status" << YAML::Value << static_cast<int>(rtk_data.status.status);
-        // 服务类型 - 使用的GNSS服务类型(位标志:1=GPS,2=GLONASS,4=COMPASS,8=GALILEO)
-        out << YAML::Key << "service" << YAML::Value << rtk_data.status.service;
-        out << YAML::EndMap;
-        out << YAML::EndMap;
-
-        std::ofstream fout(rtk_file_path);
-        if (fout.is_open())
-        {
-            fout << out.c_str();
-            fout.close();
-            ROS_INFO("RTK origin information saved to: %s", rtk_file_path.c_str());
-            rtk_origin_set = true;
-        }
-        else
-        {
-            ROS_ERROR("Failed to open file for writing: %s", rtk_file_path.c_str());
-        }
-    }
-    catch (const std::exception &e)
-    {
-        ROS_ERROR("Failed to save RTK origin to file: %s", e.what());
-    }
-}
 // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
 int main(int argc, char** argv)
@@ -1114,6 +927,8 @@ int main(int argc, char** argv)
         map_base_path += "/";
     }
     nh.param<string>("map_origin_rtk_file_path", map_origin_rtk_file_path, map_base_path + map_name + "/map_origin_rtk.yaml");
+    // 初始化子地图管理器
+    submap_manager = std::make_unique<SubmapManager>(map_base_path, map_name);
     // 添加rtk支持，地图分文件夹保存等新增功能-结束
 
     p_pre->lidar_type = lidar_type;
@@ -1230,7 +1045,18 @@ int main(int argc, char** argv)
                     // 检查RTK精度
                     if (isRTKPrecisionGood())
                     {
-                        saveRTKOrigin(latest_rtk_data);
+                        rtk_origin.fromRTKData(latest_rtk_data);
+                        std::string map_dir = map_base_path + map_name + "/";
+                        std::string rtk_file_path = map_dir + "map_origin_rtk.yaml";
+                        if (!rtk_origin.saveToFile(rtk_file_path))
+                        {
+                            ROS_ERROR("Failed to save RTK origin to file: %s", rtk_file_path.c_str());
+                        }
+                        else
+                        {
+                            ROS_INFO("RTK origin information saved to: %s", rtk_file_path.c_str());
+                            rtk_origin_set = true;
+                        }
                     }
                     else
                     {
@@ -1419,9 +1245,12 @@ int main(int argc, char** argv)
         metadata.point_count = pcl_wait_save->size();
 
         // 计算AABB包围盒
-        calculateAABB(pcl_wait_save, metadata.aabb_min, metadata.aabb_max);
+        Eigen::Vector3d min_pt, max_pt;
+        submap_manager->calculateAABB(pcl_wait_save, min_pt, max_pt);
+        metadata.aabb_min = min_pt;
+        metadata.aabb_max = max_pt;
 
-        saveSubmapMetadata(metadata);
+        submap_manager->saveSubmapMetadata(metadata);
 
         pcl_wait_save->clear();
     }
