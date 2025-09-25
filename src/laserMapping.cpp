@@ -832,12 +832,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 // 自定义RTK数据回调函数
 void rtkDataCallback(const slam_utils::RTKData::ConstPtr &msg)
 {
-    ROS_INFO("RTK data callback triggered"); 
     std::lock_guard<std::mutex> lock(rtk_data_mutex);
     latest_rtk_data = *msg;
     last_rtk_time = ros::Time::now();
 
-    ROS_INFO("Received RTK data: lat=%f, lon=%f, heading=%f, quality=%d",
+    ROS_DEBUG("Received RTK data: lat=%f, lon=%f, heading=%f, quality=%d",
              msg->latitude, msg->longitude, msg->heading, msg->position_quality);
 }
 
@@ -861,16 +860,17 @@ bool isRTKPrecisionGood()
         return false;
     }
 
-    // 检查RTK状态是否为FIX状态（SBAS或GBAS）
-    // 只有RTK解（SBAS或GBAS）才认为精度良好
+    // 检查RTK状态是否为FIX状态（SBAS或GBAS），只有RTK解（SBAS或GBAS）才认为精度良好
+    // 因实际情况需要，将GPS也算做高精度
     if (latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_SBAS_FIX ||
-        latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_GBAS_FIX)
+        latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_GBAS_FIX ||
+        latest_rtk_data.status.status == sensor_msgs::NavSatStatus::STATUS_FIX)
     {
         return true;
     }
 
     ROS_INFO("RTK PRECISION IS NOT GOOD! WAITTING FOR NEW RTK DATA");
-    // 其他状态（包括NO_FIX和FIX）都认为精度不够好
+    // 其他状态（包括NO_FIX）都认为精度不够好
     return false;
 }
 
