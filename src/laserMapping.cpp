@@ -153,8 +153,10 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 // 添加rtk支持，地图分文件夹保存等新增功能-开始
 // 是否融合rtk数据
 bool is_fuse_rtk = false;
-// 是否已经绑定了地图原点
-bool rtk_origin_set = false;
+// RTK信息是否已保存
+bool map_origin_rtk_saved = false;
+// 位姿信息是否已保存
+bool map_origin_pose_saved = false;
 // rtk订阅者
 ros::Subscriber rtk_full_subscriber;
 // 地图原点文件路径
@@ -1055,8 +1057,11 @@ int main(int argc, char** argv)
                         else
                         {
                             ROS_INFO("RTK origin information saved to: %s", rtk_file_path.c_str());
-                            rtk_origin_set = true;
+                            map_origin_rtk_saved = true;
                         }
+
+                        // 设置初始位姿
+                        rtk_origin.setInitialPose(state_point.pos, state_point.rot.toRotationMatrix());
                     }
                     else
                     {
@@ -1151,6 +1156,29 @@ int main(int argc, char** argv)
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
             kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
+
+            // 在位姿估计完成后，检查是否需要追加位姿信息到RTK原点文件
+            if (is_fuse_rtk && pcd_save_en && map_origin_rtk_saved && !map_origin_pose_saved)
+            {
+                // 确保有有效的RTK数据
+                if (isRTKPrecisionGood())
+                {
+                    std::string map_dir = map_base_path + map_name + "/";
+                    std::string rtk_file_path = map_dir + "map_origin_rtk.yaml";
+
+                    // 追加位姿信息到已有的RTK文件中
+                    if (rtk_origin.appendPoseToFile(rtk_file_path, state_point.pos, state_point.rot.toRotationMatrix()))
+                    {
+                        ROS_INFO("Initial pose information appended to: %s", rtk_file_path.c_str());
+                        map_origin_pose_saved = true;
+                    }
+                    else
+                    {
+                        ROS_ERROR("Failed to append initial pose to RTK origin file: %s", rtk_file_path.c_str());
+                    }
+                }
+            }
+
             state_point = kf.get_x();
             euler_cur = SO3ToEuler(state_point.rot);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
