@@ -1,0 +1,22 @@
+<launch>
+  <!-- Launch file for robosense Airy LiDAR -->
+
+    <arg name="rviz" default="true" /> <!-- 是否启动RViz可视化，默认启用 -->
+
+    <rosparam command="load" file="$(find fast_lio)/config/robosense_airy.yaml" /> <!-- 加载FAST-LIO配置文件 -->
+
+    <param name="feature_extract_enable" type="bool" value="0"/> <!-- 是否启用特征提取，0为关闭，1为启用 -->
+    <param name="point_filter_num" type="int" value="1"/> <!-- 点云过滤参数，值越大过滤越多，计算更快 -->
+    <param name="max_iteration" type="int" value="10" /> <!-- 优化算法的最大迭代次数，值越大精度越高但计算时间增加 -->
+    <param name="filter_size_surf" type="double" value="0.2" /> <!-- 表面点的体素过滤大小，值越小细节保留越多 -->
+    <param name="filter_size_map" type="double" value="0.2" /> <!-- 地图点的体素过滤大小，值越小地图分辨率越高 -->
+    <param name="cube_side_length" type="double" value="1000" /> <!-- 地图分块的立方体边长，用于优化内存和处理效率 -->
+    <param name="runtime_pos_log_enable" type="bool" value="0" /> <!-- 是否启用实时位置记录，0为关闭，1为启用 -->
+
+    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> <!-- 启动FAST-LIO主节点，负责点云映射和定位 -->
+
+    <group if="$(arg rviz)">
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/fast_lio_robosense.rviz" /> <!-- 启动RViz可视化，显示点云、地图和轨迹 -->
+    </group>
+
+</launch>
