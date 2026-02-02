@@ -384,6 +384,46 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
 
+    // 对IMU数据进行坐标轴变换
+    // 原坐标轴 x 变成 -y
+    // 原坐标轴 y 变成 -x
+    // 原坐标轴 z 变成 -z
+    geometry_msgs::Vector3 linear_acc = msg->linear_acceleration;
+    geometry_msgs::Vector3 angular_vel = msg->angular_velocity;
+    
+    // 垂直装
+    msg->linear_acceleration.x = -linear_acc.z;
+    msg->linear_acceleration.y =  linear_acc.x;
+    msg->linear_acceleration.z = -linear_acc.y;
+    
+    msg->angular_velocity.x = -angular_vel.z;
+    msg->angular_velocity.y =  angular_vel.x;
+    msg->angular_velocity.z = -angular_vel.y;
+   
+    // 计算三角函数值-正装
+    // msg->linear_acceleration.x = -linear_acc.y;
+    // msg->linear_acceleration.y = -linear_acc.x;
+    // msg->linear_acceleration.z = -linear_acc.z;
+    
+    // msg->angular_velocity.x = -angular_vel.y;
+    // msg->angular_velocity.y = -angular_vel.x;
+    // msg->angular_velocity.z = -angular_vel.z;
+
+    // 旋转
+    // double rotation_degrees = 20 /* 这里应该传入您需要的角度，例如30，40, 50, 60等 */;
+    // double rotation_radians = rotation_degrees * M_PI / 180.0;  // 将角度转换为弧度
+    // // 计算三角函数值
+    // double cos_theta = cos(rotation_radians);
+    // double sin_theta = sin(rotation_radians);
+    // msg->linear_acceleration.x = -linear_acc.y*cos_theta-linear_acc.z*sin_theta;
+    // msg->linear_acceleration.y = -linear_acc.x;
+    // msg->linear_acceleration.z = -linear_acc.z*cos_theta+linear_acc.y*sin_theta;
+    
+    // msg->angular_velocity.x = -angular_vel.y*cos_theta-angular_vel.z*sin_theta;
+    // msg->angular_velocity.y = -angular_vel.x;
+    // msg->angular_velocity.z = -angular_vel.z*cos_theta+angular_vel.y*sin_theta;
+
+
     msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
     {
@@ -913,6 +953,9 @@ int main(int argc, char** argv)
     nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
     nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
     nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, false);
+    ROS_WARN("===============READ PARAM PCD SAVE EN: %d===============", pcd_save_en);
+    ROS_WARN("===============READ PARAM PCD SAVE EN: %d===============", pcd_save_en);
+    ROS_WARN("===============READ PARAM PCD SAVE EN: %d===============", pcd_save_en);
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
